@@ -1,7 +1,9 @@
 # activity_manager/trackers/keyboard_tracker.py
 
+import os
 import threading
 import datetime
+import time
 from collections import deque
 from Quartz.CoreGraphics import (
     CGEventTapCreate,
@@ -15,77 +17,70 @@ from Quartz.CoreGraphics import (
     kCGKeyboardEventKeycode,
 )
 import CoreFoundation as CF
+import json
 
-# Basic mapping of macOS keycodes to readable keys (can be expanded)
 KEY_MAP = {
-    0: "A",
-    1: "S",
-    2: "D",
-    3: "F",
-    4: "H",
-    5: "G",
-    6: "Z",
-    7: "X",
-    8: "C",
-    9: "V",
-    11: "B",
-    12: "Q",
-    13: "W",
-    14: "E",
-    15: "R",
-    16: "Y",
-    17: "T",
-    18: "1",
-    19: "2",
-    20: "3",
-    21: "4",
-    22: "6",
-    23: "5",
-    24: "=",
-    25: "9",
-    26: "7",
-    27: "-",
-    28: "8",
-    29: "0",
-    30: "]",
-    31: "O",
-    32: "U",
-    33: "[",
-    34: "I",
-    35: "P",
-    36: "Return",
-    37: "L",
-    38: "J",
-    39: "'",
-    40: "K",
-    41: ";",
-    42: "\\",
-    43: ",",
-    44: "/",
-    45: "N",
-    46: "M",
-    47: ".",
-    49: "Space",
-    51: "Delete",
-    53: "Escape",
-    123: "Left",
-    124: "Right",
-    125: "Down",
-    126: "Up",
+    0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x", 8: "c", 9: "v",
+    11: "b", 12: "q", 13: "w", 14: "e", 15: "r", 16: "y", 17: "t", 18: "1", 19: "2",
+    20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8",
+    29: "0", 30: "]", 31: "o", 32: "u", 33: "[", 34: "i", 35: "p", 36: "\n",  # Return
+    37: "l", 38: "j", 39: "'", 40: "k", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "n",
+    46: "m", 47: ".", 49: " ",  # Space
+    51: "[DEL]", 53: "[ESC]",
+    123: "[LEFT]", 124: "[RIGHT]", 125: "[DOWN]", 126: "[UP]",
 }
 
 
 class KeyboardTracker:
-    def __init__(self, callback=None, buffer_size=10):
-        """
-        :param callback: function accepting (timestamp, key_code, event_type)
-        """
-        self.callback = callback
+    def __init__(self, storage=None, buffer_size=10, flush_interval=5):
+        self.storage = storage
         self.running = False
         self.thread = None
-
-        # keep last N keys
         self.last_keys = deque(maxlen=buffer_size)
+        self.text_buffer = ""  # human-readable typed text
+        self.flush_interval = flush_interval
+        self.last_flush = time.time()
+
+        os.makedirs("logs", exist_ok=True)
+        self.log_file = "logs/keyboard.log"
+        self.summary_file = "logs/summary.log"
+
+    def _append_to_summary(self, key_str):
+        """Builds natural text and flushes periodically."""
+        if key_str == "\n":  # Enter key
+            self._flush(force=True)
+        elif key_str == "[DEL]":
+            self.text_buffer = self.text_buffer[:-1]
+        elif len(key_str) == 1 or key_str == " ":
+            self.text_buffer += key_str
+        # Ignore arrows, escape, etc.
+
+        # Periodic flush
+        now = time.time()
+        if now - self.last_flush > self.flush_interval:
+            self._flush()
+
+    def _flush(self, force=False):
+        """Write buffer to file if non-empty."""
+        if self.text_buffer.strip():
+            with open(self.summary_file, "a") as f:
+                f.write(self.text_buffer + ("\n" if force else " "))
+            self.text_buffer = ""
+        self.last_flush = time.time()
+
+    def _log_event(self, key_str, ts):
+        event = {"timestamp": ts, "key": key_str}
+
+        # Raw JSON log
+        with open(self.log_file, "a") as f:
+            f.write(json.dumps(event) + "\n")
+
+        # Update summary
+        self._append_to_summary(key_str)
+
+        # Optional storage
+        if self.storage:
+            self.storage.log_event("keyboard", event)
 
     def start(self):
         if not self.running:
@@ -96,25 +91,20 @@ class KeyboardTracker:
 
     def stop(self):
         self.running = False
+        CF.CFRunLoopStop(CF.CFRunLoopGetCurrent())  # stop loop
         print("[KeyboardTracker] Stopped.")
 
     def get_last_keys(self):
-        """Return a list of recently pressed keys (human-readable if possible)."""
         return list(self.last_keys)
 
     def _run(self):
         def callback(proxy, type_, event, refcon):
-            if type_ in (kCGEventKeyDown, kCGEventKeyUp):
+            if type_ == kCGEventKeyDown:
                 key_code = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-                ts = datetime.datetime.now()
-
-                if type_ == kCGEventKeyDown:
-                    key_str = KEY_MAP.get(key_code, f"[{key_code}]")  # fallback to raw number
-                    self.last_keys.append(key_str)
-
-                if self.callback:
-                    self.callback(ts, key_code, type_)
-
+                ts = datetime.datetime.now().isoformat()
+                key_str = KEY_MAP.get(key_code, f"[{key_code}]")
+                self.last_keys.append(key_str)
+                self._log_event(key_str, ts)
             return event
 
         event_mask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp)
@@ -128,16 +118,11 @@ class KeyboardTracker:
         )
 
         if not tap:
-            print("[KeyboardTracker] ERROR: Could not create event tap. Do you have accessibility permissions?")
+            print("[KeyboardTracker] ERROR: Could not create event tap. "
+                  "Do you have accessibility permissions?")
             return
 
         run_loop_source = CF.CFMachPortCreateRunLoopSource(None, tap, 0)
-        CF.CFRunLoopAddSource(
-            CF.CFRunLoopGetCurrent(),
-            run_loop_source,
-            CF.kCFRunLoopDefaultMode,
-        )
-
+        CF.CFRunLoopAddSource(CF.CFRunLoopGetCurrent(), run_loop_source, CF.kCFRunLoopDefaultMode)
         CGEventTapEnable(tap, True)
-
         CF.CFRunLoopRun()

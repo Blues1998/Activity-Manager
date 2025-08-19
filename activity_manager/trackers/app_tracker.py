@@ -1,16 +1,21 @@
 # activity_manager/trackers/application_tracker.py
-
+import json
 import threading
 import time
+import datetime
 from AppKit import NSWorkspace
 
 
 class AppTracker:
-    def __init__(self):
+    def __init__(self, storage=None):
+        """
+        :param storage: optional storage backend (must implement .log_event)
+        """
         self.running = False
         self.thread = None
         self.last_app = None
         self.recent_apps = []  # keep a small history
+        self.storage = storage
 
     def start(self):
         if not self.running:
@@ -34,8 +39,16 @@ class AppTracker:
             if app_name != self.last_app:
                 self.last_app = app_name
                 self.recent_apps.insert(0, f"{app_name} ({bundle_id})")
-                self.recent_apps = self.recent_apps[:5]  # keep only last 5
-                print(f"[ApplicationTracker] Active app: {app_name} ({bundle_id})")
+                self.recent_apps = self.recent_apps[:5]
+
+                log_entry = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "event": "switch",
+                    "app_name": app_name,
+                    "bundle_id": bundle_id,
+                }
+                with open("logs/apps.log", "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
 
             time.sleep(1)  # check every second
 

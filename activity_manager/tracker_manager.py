@@ -7,10 +7,14 @@ from activity_manager.trackers.keyboard_tracker import KeyboardTracker
 from activity_manager.trackers.mouse_tracker import MouseTracker
 from activity_manager.trackers.app_tracker import AppTracker
 from activity_manager.trackers.idle_tracker import IdleTracker
+from activity_manager.storage.storage_manager import StorageManager
 
 
 class TrackerManager:
     def __init__(self):
+        # Storage (logs everything to file by default)
+        self.storage = StorageManager(mode="file", path="logs/activity.log")
+
         # Initialize trackers
         self.keyboard = KeyboardTracker()
         self.mouse = MouseTracker()
@@ -46,3 +50,7 @@ class TrackerManager:
             "idle_time": self.idle.get_idle_time(),
             "active_app": self.app.get_active_app()
         }
+
+    def close(self):
+        """Gracefully close storage backend"""
+        self.storage.close()
